@@ -1,4 +1,4 @@
-# Dialecta — IdeoScope AI
+# Dialecta AI
 
 Análise crítica de discurso e mapeamento ideológico, com leitura de texto, URL e arquivos (PDF, imagem, áudio e vídeo).
 

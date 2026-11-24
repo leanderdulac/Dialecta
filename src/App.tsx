@@ -137,7 +137,7 @@ export default function App() {
             <Search className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight text-gray-900 dark:text-white">IdeoScope AI</h1>
+            <h1 className="text-xl font-semibold tracking-tight text-gray-900 dark:text-white">Dialecta AI</h1>
             <p className="text-xs text-gray-500 dark:text-gray-400 font-mono uppercase tracking-wider">Sistema de Análise Crítica</p>
           </div>
         </div>

@@ -29,7 +29,7 @@ function readJsonBody(req: any): Promise<unknown> {
 // este middleware repete o comportamento no `npm run dev`.
 function analysisApi(): Plugin {
   return {
-    name: 'ideoscope-analysis-api',
+    name: 'dialecta-analysis-api',
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use('/api/analyze', async (req: any, res: any) => {
