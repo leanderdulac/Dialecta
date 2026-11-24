@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { motion } from 'motion/react';
 import { FileText, Link as LinkIcon, Upload, Loader2, Search, AlertCircle, X, CheckCircle2, Sun, Moon } from 'lucide-react';
 import Markdown from 'react-markdown';
-import { analyzeContent } from './services/geminiService';
+import { analyzeContent, ALLOWED_MIME_TYPES, MAX_FILES, MAX_FILE_BYTES } from './services/geminiService';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -38,10 +38,30 @@ export default function App() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const newFiles = Array.from(e.target.files);
-      setFiles((prev) => [...prev, ...newFiles]);
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const maxMb = MAX_FILE_BYTES / (1024 * 1024);
+    const accepted: File[] = [];
+    const problems: string[] = [];
+
+    for (const file of Array.from(e.target.files)) {
+      if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+        problems.push(`${file.name}: tipo não suportado`);
+      } else if (file.size > MAX_FILE_BYTES) {
+        problems.push(`${file.name}: acima de ${maxMb} MB`);
+      } else {
+        accepted.push(file);
+      }
     }
+
+    const room = Math.max(0, MAX_FILES - files.length);
+    if (accepted.length > room) {
+      problems.push(`máximo de ${MAX_FILES} arquivos por análise`);
+    }
+
+    setFiles([...files, ...accepted.slice(0, room)]);
+    setError(problems.length > 0 ? `Não enviado — ${problems.join('; ')}.` : null);
+    e.target.value = '';
   };
 
   const removeFile = (index: number) => {
@@ -58,7 +78,7 @@ export default function App() {
           const base64 = reader.result.split(',')[1];
           resolve(base64);
         } else {
-          reject(new Error('Failed to read file as base64'));
+          reject(new Error('Falha ao ler o arquivo.'));
         }
       };
       reader.onerror = (error) => reject(error);

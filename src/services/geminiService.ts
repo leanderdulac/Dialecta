@@ -1,114 +1,109 @@
-import { GoogleGenAI } from "@google/genai";
+export const ALLOWED_MIME_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/mp4',
+  'video/mp4',
+  'video/quicktime',
+];
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-const SYSTEM_PROMPT = `Você é o IdeoScope AI, um sistema de análise crítica de discurso e mapeamento ideológico com arquitetura híbrida de processamento de linguagem natural (NLP) e modelagem histórico-filosófica. Sua função é decompor textos, discursos e conteúdos multimídia para mapear suas coordenadas ideológicas, contexto de produção e genealogia intelectual.
-
-#### 1. CORE CAPABILITIES
-
-Análise Ideológica Multidimensional:
-- Mapeie o texto em espectros políticos clássicos (esquerda/direita) e contemporâneos (libertário/autoritário, progressista/conservador, globalista/nacionalista)
-- Identifique escolas filosóficas subjacentes (marxismo, liberalismo clássico, conservadorismo, anarcocapitalismo, ecossocialismo, etc.)
-- Detecte influências teóricas implícitas (Foucault, Hayek, Gramsci, Olavo de Carvalho, Judith Butler, etc.) mesmo quando não citadas diretamente
-
-Profiling de Autoria:
-- Sugira 3-5 autores prováveis ou correlatos com porcentagem de similaridade estilística e temática
-- Indique época provável de produção com base no vocabulário, referências culturais e estrutura argumentativa
-- Contextualize o momento histórico (crise econômica, movimentos sociais, guerras, avanços tecnológicos da época)
-
-#### 2. FUNCIONALIDADE DIALÉTICA (ANTÍTESE)
-
-Para cada análise realizada:
-- Sugira 2-3 autores ou obras que constituam a antítese direta da tese apresentada
-- Explique o raciocínio dialético: quais pressupostos o texto ataca ou ignora que esses autores defenderiam?
-- Construa uma "árvore de debate" mostrando onde essas correntes se chocam (ontologia, epistemologia, ética, economia)
-
-#### 3. INPUT PROCESSING
-
-Multimodalidade:
-- Aceite texto puro, PDF, imagens (OCR), áudio (transcrição) e vídeo (extração de áudio + análise visual de apresentação)
-- Para links do YouTube: transcreva automaticamente, analise a entonação quando relevante (pausas ênfases), identifique referências visuais (logos, bandeiras, cenários) e correlacione com o discurso verbal
-
-#### 4. OUTPUT ESTRUTURADO (FORMATO DIDÁTICO)
-
-Toda resposta deve seguir:
-
-📍 DIAGNÓSTICO IDEOLÓGICO
-   - Posicionamento no espectro político (matriz 4D)
-   - Escolas filosóficas identificadas
-   - Keywords ideológicas recorrentes
-
-👤 HIPÓTESES DE AUTORIA
-   [Autor 1]: X% de compatibilidade (justificativa)
-   [Autor 2]: Y% de compatibilidade (justificativa)
-
-⏳ CONTEXTUALIZAÇÃO HISTÓRICA
-   - Época provável: [Década/Século]
-   - Eventos correlatos: [Lista]
-   - Arco histórico: Como esse texto dialoga com seu tempo?
-
-⚔️ ANTÍTESE SUGERIDA
-   - Autor/Oposição: [Nome]
-   - Tese contrária: [Resumo]
-   - Ponto de divergência fundamental: [Análise]
-
-📚 REFERÊNCIAS E FONTES
-   - Citações diretas detectadas (com links quando possível)
-   - Bibliografia correlata sugerida para estudo aprofundado
-   - Alerta sobre possíveis plágios ou apropriações indevidas
-
-#### 5. CONSTRAINTS E ÉTICA
-
-- Sempre mantenha tom acadêmico e imparcial; evite julgamentos morais sobre a ideologia detectada
-- Quando a confiança na análise for <70%, declare a incerteza e sugira múltiplas interpretações
-- Respeite direitos autorais: para conteúdo protegido, analise apenas excertos razoáveis (fair use)
-- Inclua disclaimer sobre limitações: IA pode identificar padrões, mas não substitui leitura crítica humana`;
+// Mantido em sincronia com os limites de server/analyze.ts: a Vercel recusa
+// requisições acima de ~4,5 MB, por isso o aviso acontece antes do envio.
+export const MAX_FILES = 3;
+export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+export const MAX_TEXT_CHARS = 100_000;
 
 export interface AnalysisInput {
   text?: string;
   files?: { mimeType: string; data: string }[];
 }
 
-export async function analyzeContent(input: AnalysisInput, onChunk: (text: string) => void) {
-  try {
-    const parts: any[] = [];
-    
-    if (input.text) {
-      parts.push({ text: input.text });
-    }
-    
-    if (input.files && input.files.length > 0) {
-      for (const file of input.files) {
-        parts.push({
-          inlineData: {
-            mimeType: file.mimeType,
-            data: file.data,
-          }
-        });
-      }
-    }
+function validateLocally(input: AnalysisInput): void {
+  const files = input.files ?? [];
 
-    if (parts.length === 0) {
-      throw new Error("No input provided");
-    }
+  if (!input.text && files.length === 0) {
+    throw new Error('Forneça um texto ou ao menos um arquivo para análise.');
+  }
+  if (input.text && input.text.length > MAX_TEXT_CHARS) {
+    throw new Error(`Texto excede o limite de ${MAX_TEXT_CHARS.toLocaleString('pt-BR')} caracteres.`);
+  }
+  if (files.length > MAX_FILES) {
+    throw new Error(`Envie no máximo ${MAX_FILES} arquivos por análise.`);
+  }
 
-    const responseStream = await ai.models.generateContentStream({
-      model: "gemini-3.1-pro-preview",
-      contents: { parts },
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.2,
-        tools: [{ googleSearch: {} }],
-      }
-    });
-
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        onChunk(chunk.text);
-      }
+  for (const file of files) {
+    if (!ALLOWED_MIME_TYPES.includes(file.mimeType)) {
+      throw new Error(`Tipo de arquivo não suportado: ${file.mimeType}`);
     }
-  } catch (error) {
-    console.error("Error analyzing content:", error);
-    throw error;
+    const bytes = Math.floor((file.data.length * 3) / 4);
+    if (bytes > MAX_FILE_BYTES) {
+      throw new Error(`O arquivo excede ${MAX_FILE_BYTES / (1024 * 1024)} MB. Reduza o arquivo ou envie um trecho.`);
+    }
+  }
+}
+
+export async function analyzeContent(input: AnalysisInput, onChunk: (text: string) => void): Promise<void> {
+  validateLocally(input);
+
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/x-ndjson',
+    },
+    body: JSON.stringify({ text: input.text, files: input.files ?? [] }),
+  });
+
+  if (!response.ok) {
+    let message = `Falha na análise (HTTP ${response.status}).`;
+    try {
+      const data = await response.json();
+      if (data?.error) message = data.error;
+    } catch {
+      // resposta sem JSON: mantém a mensagem genérica
+    }
+    throw new Error(message);
+  }
+
+  if (!response.body) {
+    throw new Error('Resposta de análise vazia.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let event: { type?: string; text?: string; message?: string };
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      return;
+    }
+    if (event.type === 'chunk' && event.text) {
+      onChunk(event.text);
+    } else if (event.type === 'error') {
+      throw new Error(event.message || 'Falha durante a análise.');
+    }
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    lines.forEach(handleLine);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    handleLine(buffer);
   }
 }
