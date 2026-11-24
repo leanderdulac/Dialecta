@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import 'dotenv/config';
-import { streamAnalysis, validateInput, toPublicError, isConfigured, MISSING_KEY_MESSAGE } from './server/analyze';
+import { streamAnalysis, validateInput, toPublicError, isConfigured, MISSING_KEY_MESSAGE } from './api/analyze';
 
 function readJsonBody(req: any): Promise<unknown> {
   return new Promise((resolve, reject) => {

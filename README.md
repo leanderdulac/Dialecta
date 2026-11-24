@@ -7,8 +7,9 @@ Análise crítica de discurso e mapeamento ideológico, com leitura de texto, UR
 O navegador nunca vê a chave da API. O frontend envia o material para `/api/analyze`, uma função serverless que chama o Google Gemini e devolve a resposta em streaming.
 
 - `src/` — interface React (Vite + Tailwind).
-- `server/analyze.ts` — prompt, validação e chamada ao Gemini (compartilhado).
-- `api/analyze.ts` — função serverless usada em produção na Vercel.
+- `api/analyze.ts` — função serverless com prompt, validação e chamada ao Gemini.
+  Fica num arquivo só porque a Vercel compila cada função isoladamente; o dev
+  server do Vite reaproveita o mesmo módulo.
 
 ## Rodar localmente
 
