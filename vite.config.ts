@@ -50,9 +50,19 @@ function analysisApi(): Plugin {
           return;
         }
 
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.end(JSON.stringify({ error: 'JSON inválido.' }));
+          return;
+        }
+
         let input;
         try {
-          input = validateInput(await readJsonBody(req));
+          input = validateInput(body);
         } catch (error) {
           const { status, message } = toPublicError(error);
           res.statusCode = status;

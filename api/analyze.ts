@@ -290,9 +290,17 @@ export default async function handler(req: RequestLike, res: ResponseLike) {
     return;
   }
 
+  let body: unknown;
+  try {
+    body = await parseBody(req);
+  } catch {
+    res.status(400).json({ error: "JSON inválido." });
+    return;
+  }
+
   let input;
   try {
-    input = validateInput(await parseBody(req));
+    input = validateInput(body);
   } catch (error) {
     const { status, message } = toPublicError(error);
     res.status(status).json({ error: message });

@@ -1,14 +1,42 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { FileText, Link as LinkIcon, Upload, Loader2, Search, AlertCircle, X, CheckCircle2, Sun, Moon } from 'lucide-react';
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Copy,
+  FileText,
+  Link as LinkIcon,
+  Loader2,
+  Moon,
+  Search,
+  Sparkles,
+  Sun,
+  Upload,
+  X,
+} from 'lucide-react';
 import Markdown from 'react-markdown';
-import { analyzeContent, ALLOWED_MIME_TYPES, MAX_FILES, MAX_FILE_BYTES } from './services/geminiService';
+import { analyzeContent, ALLOWED_MIME_TYPES, MAX_FILES, MAX_FILE_BYTES, MAX_TEXT_CHARS } from './services/geminiService';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const cardClass =
+  'flex flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white/80 shadow-sm backdrop-blur-xl transition-colors dark:border-white/10 dark:bg-white/[0.025]';
+
+const fieldClass =
+  'w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-3 text-sm text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-500/10 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-100 dark:placeholder:text-zinc-600 dark:focus:border-indigo-400/70 dark:focus:ring-indigo-500/15';
+
+const labelClass = 'flex items-center gap-2 text-[13px] font-medium text-zinc-700 dark:text-zinc-300';
 
 export default function App() {
   const [textInput, setTextInput] = useState('');
@@ -17,34 +45,47 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('dialecta-theme') : null;
+    if (saved === 'light') return false;
+    if (saved === 'dark') return true;
+    return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
 
-  const toggleTheme = () => setIsDarkMode(!isDarkMode);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resultScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDarkMode);
+    document.documentElement.style.colorScheme = isDarkMode ? 'dark' : 'light';
+    localStorage.setItem('dialecta-theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
+
+  useEffect(() => () => {
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+  }, []);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setTextInput(e.target.value);
-    
     setIsTyping(true);
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-    
-    typingTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false);
-    }, 1000);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => setIsTyping(false), 1000);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
+  const addFiles = (incoming: File[]) => {
+    if (incoming.length === 0) return;
 
     const maxMb = MAX_FILE_BYTES / (1024 * 1024);
     const accepted: File[] = [];
     const problems: string[] = [];
 
-    for (const file of Array.from(e.target.files)) {
+    for (const file of incoming) {
       if (!ALLOWED_MIME_TYPES.includes(file.type)) {
         problems.push(`${file.name}: tipo não suportado`);
       } else if (file.size > MAX_FILE_BYTES) {
@@ -61,245 +102,354 @@ export default function App() {
 
     setFiles([...files, ...accepted.slice(0, room)]);
     setError(problems.length > 0 ? `Não enviado — ${problems.join('; ')}.` : null);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(Array.from(e.target.files ?? []));
     e.target.value = '';
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    addFiles(Array.from(e.dataTransfer.files ?? []));
   };
 
   const removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = () => {
         if (typeof reader.result === 'string') {
-          // Remove the data:mime/type;base64, prefix
-          const base64 = reader.result.split(',')[1];
-          resolve(base64);
+          resolve(reader.result.split(',')[1]);
         } else {
           reject(new Error('Falha ao ler o arquivo.'));
         }
       };
-      reader.onerror = (error) => reject(error);
+      reader.onerror = () => reject(new Error('Falha ao ler o arquivo.'));
     });
-  };
 
   const handleAnalyze = async () => {
     if (!textInput && !urlInput && files.length === 0) {
-      setError('Por favor, forneça um texto, URL ou arquivo para análise.');
+      setError('Forneça um texto, URL ou arquivo para análise.');
       return;
     }
 
     setIsAnalyzing(true);
     setResult('');
     setError(null);
+    resultScrollRef.current?.scrollTo({ top: 0 });
 
     try {
       let combinedText = textInput;
       if (urlInput) {
-        combinedText += `\n\nURL para análise: ${urlInput}`;
+        try {
+          new URL(urlInput);
+          combinedText += `\n\nURL para análise: ${urlInput}`;
+        } catch {
+          throw new Error('URL inválida.');
+        }
       }
 
       const fileData = await Promise.all(
         files.map(async (file) => ({
           mimeType: file.type,
           data: await fileToBase64(file),
-        }))
+        })),
       );
 
       await analyzeContent(
-        {
-          text: combinedText.trim() || undefined,
-          files: fileData,
-        },
-        (chunk) => {
-          setResult((prev) => prev + chunk);
-        }
+        { text: combinedText.trim() || undefined, files: fileData },
+        (chunk) => setResult((prev) => prev + chunk),
       );
     } catch (err: any) {
-      console.error(err);
+      console.error('Erro na análise:', err);
       setError(err.message || 'Ocorreu um erro durante a análise.');
     } finally {
       setIsAnalyzing(false);
     }
   };
 
+  const handleClear = () => {
+    setTextInput('');
+    setUrlInput('');
+    setFiles([]);
+    setResult('');
+    setError(null);
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(result);
+      setCopied(true);
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError('Não foi possível copiar o relatório.');
+    }
+  };
+
+  const canSubmit = !isAnalyzing && Boolean(textInput || urlInput || files.length > 0);
+
   return (
-    <div className={cn(
-      "min-h-screen font-sans flex flex-col transition-colors duration-200",
-      isDarkMode ? "dark bg-[#0a0a0a] text-[#e5e5e5]" : "bg-gray-50 text-gray-900"
-    )}>
-      {/* Header */}
-      <header className="border-b border-gray-200 dark:border-white/10 bg-white dark:bg-[#0f0f0f] px-6 py-4 flex items-center justify-between sticky top-0 z-10 transition-colors duration-200">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
-            <Search className="w-5 h-5 text-white" />
+    <div className="relative min-h-screen overflow-x-hidden">
+      <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute -top-48 left-1/2 h-[440px] w-[860px] -translate-x-1/2 rounded-full bg-indigo-400/25 blur-[130px] dark:bg-indigo-600/25" />
+        <div className="absolute -bottom-32 right-[-6rem] h-[340px] w-[520px] rounded-full bg-cyan-300/30 blur-[130px] dark:bg-cyan-500/15" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_-10%,rgba(255,255,255,0.6),transparent_55%)] dark:bg-[radial-gradient(circle_at_50%_-10%,rgba(99,102,241,0.08),transparent_55%)]" />
+      </div>
+
+      <header className="sticky top-0 z-20 border-b border-zinc-200/70 bg-white/70 backdrop-blur-xl dark:border-white/5 dark:bg-[#07080b]/70">
+        <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-3 px-4 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-cyan-400 shadow-[0_8px_20px_-8px_rgba(79,70,229,0.8)]">
+              <Sparkles className="h-[18px] w-[18px] text-white" />
+            </div>
+            <div className="leading-tight">
+              <h1 className="text-[15px] font-semibold tracking-tight text-zinc-900 dark:text-white">Dialecta AI</h1>
+              <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-500">Análise crítica de discurso</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-gray-900 dark:text-white">Dialecta AI</h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400 font-mono uppercase tracking-wider">Sistema de Análise Crítica</p>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleClear}
+              className="rounded-lg px-3 py-2 text-[13px] font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-white"
+            >
+              Limpar
+            </button>
+            <button
+              onClick={() => setIsDarkMode((prev) => !prev)}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200/80 bg-white/60 text-zinc-600 transition hover:bg-white hover:text-zinc-900 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:bg-white/10 dark:hover:text-white"
+              title={isDarkMode ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+              aria-label={isDarkMode ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+            >
+              {isDarkMode ? <Sun className="h-[17px] w-[17px]" /> : <Moon className="h-[17px] w-[17px]" />}
+            </button>
           </div>
         </div>
-        <button
-          onClick={toggleTheme}
-          className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5 text-gray-600 dark:text-gray-400 transition-colors"
-          title={isDarkMode ? "Mudar para tema claro" : "Mudar para tema escuro"}
-        >
-          {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0">
-        {/* Left Panel: Input */}
-        <div className="p-6 lg:p-8 border-r border-gray-200 dark:border-white/10 flex flex-col gap-6 overflow-y-auto max-h-[calc(100vh-73px)] bg-white dark:bg-transparent transition-colors duration-200">
-          <div className="space-y-1">
-            <h2 className="text-lg font-medium text-gray-900 dark:text-white">Nova Análise</h2>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Forneça o material para mapeamento ideológico e contextualização histórica.</p>
-          </div>
+      <main className="mx-auto grid max-w-[1440px] grid-cols-1 gap-4 p-4 sm:p-6 lg:h-[calc(100vh-4rem)] lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:gap-5">
+        <section className={cn(cardClass, 'lg:min-h-0')}>
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6">
+            <div className="mb-6 space-y-1">
+              <h2 className="text-base font-semibold tracking-tight text-zinc-900 dark:text-white">Nova análise</h2>
+              <p className="text-[13px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                Texto, link ou arquivo — o relatório mapeia posicionamento, autoria provável e antítese.
+              </p>
+            </div>
 
-          {/* Text Input */}
-          <div className="space-y-2 relative">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
-                <FileText className="w-4 h-4" />
-                Texto ou Transcrição
-              </label>
-              {isTyping && (
-                <div className="flex items-center gap-1.5 text-xs text-gray-500 font-mono">
-                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                  <span className="ml-1">digitando...</span>
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="analysis-text" className={labelClass}>
+                    <FileText className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+                    Texto ou transcrição
+                  </label>
+                  <span
+                    className={cn(
+                      'font-mono text-[11px] tabular-nums transition-colors',
+                      isTyping ? 'text-indigo-500 dark:text-indigo-400' : 'text-zinc-400 dark:text-zinc-600',
+                    )}
+                  >
+                    {isTyping ? 'digitando…' : `${textInput.length.toLocaleString('pt-BR')} / ${MAX_TEXT_CHARS.toLocaleString('pt-BR')}`}
+                  </span>
+                </div>
+                <textarea
+                  id="analysis-text"
+                  value={textInput}
+                  onChange={handleTextChange}
+                  placeholder="Cole aqui o discurso, artigo ou transcrição…"
+                  className={cn(fieldClass, 'h-40 resize-none leading-relaxed')}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="analysis-url" className={labelClass}>
+                  <LinkIcon className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+                  URL
+                  <span className="font-normal text-zinc-400 dark:text-zinc-600">artigo, YouTube…</span>
+                </label>
+                <input
+                  id="analysis-url"
+                  type="url"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="https://…"
+                  className={fieldClass}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className={labelClass}>
+                  <Upload className="h-4 w-4 text-indigo-500 dark:text-indigo-400" />
+                  Arquivos
+                </label>
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                  className={cn(
+                    'flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed px-4 py-6 text-center transition',
+                    isDragging
+                      ? 'border-indigo-400 bg-indigo-500/10'
+                      : 'border-zinc-300 bg-zinc-50/60 hover:border-indigo-300 hover:bg-indigo-500/5 dark:border-white/10 dark:bg-white/[0.02] dark:hover:border-indigo-400/50 dark:hover:bg-indigo-500/5',
+                  )}
+                >
+                  <Upload className={cn('h-5 w-5', isDragging ? 'text-indigo-500' : 'text-zinc-400 dark:text-zinc-500')} />
+                  <p className="text-[13px] font-medium text-zinc-700 dark:text-zinc-300">
+                    {isDragging ? 'Solte para anexar' : 'Arraste arquivos ou clique aqui'}
+                  </p>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-600">
+                    PDF, imagem, áudio ou vídeo · até {MAX_FILES} arquivos de {formatBytes(MAX_FILE_BYTES)}
+                  </p>
+                </div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  multiple
+                  className="hidden"
+                  accept=".pdf,image/*,audio/*,video/*"
+                />
+
+                {files.length > 0 && (
+                  <ul className="mt-2 space-y-1.5">
+                    {files.map((file, index) => (
+                      <li
+                        key={`${file.name}-${index}`}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200/80 bg-white px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                          <span className="truncate text-[13px] text-zinc-700 dark:text-zinc-300">{file.name}</span>
+                          <span className="shrink-0 font-mono text-[11px] text-zinc-400 dark:text-zinc-600">{formatBytes(file.size)}</span>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFile(index);
+                          }}
+                          className="rounded-md p-1 text-zinc-400 transition hover:bg-red-500/10 hover:text-red-500 dark:text-zinc-500"
+                          aria-label={`Remover ${file.name}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {error && (
+                <div className="flex items-start gap-2.5 rounded-xl border border-red-500/25 bg-red-500/10 px-3.5 py-3 text-[13px] text-red-600 dark:text-red-300">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p className="leading-relaxed">{error}</p>
                 </div>
               )}
             </div>
-            <textarea
-              value={textInput}
-              onChange={handleTextChange}
-              placeholder="Cole o texto, discurso ou artigo aqui..."
-              className="w-full h-48 bg-gray-50 dark:bg-[#141414] border border-gray-200 dark:border-white/10 rounded-xl p-4 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all resize-none"
-            />
           </div>
 
-          {/* URL Input */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
-              <LinkIcon className="w-4 h-4" />
-              URL (Artigo, YouTube, etc.)
-            </label>
-            <input
-              type="url"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="https://..."
-              className="w-full bg-gray-50 dark:bg-[#141414] border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 text-sm text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-            />
-          </div>
-
-          {/* File Upload */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
-              <Upload className="w-4 h-4" />
-              Arquivos (PDF, Imagem, Áudio, Vídeo)
-            </label>
-            <div 
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full border-2 border-dashed border-gray-300 dark:border-white/10 rounded-xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-blue-500/50 hover:bg-blue-50 dark:hover:bg-blue-500/5 transition-all"
+          <div className="border-t border-zinc-200/70 bg-white/60 p-5 sm:p-6 dark:border-white/5 dark:bg-white/[0.015]">
+            <button
+              onClick={handleAnalyze}
+              disabled={!canSubmit}
+              className="group flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 via-indigo-500 to-cyan-500 text-sm font-semibold text-white shadow-[0_12px_30px_-14px_rgba(79,70,229,0.9)] transition hover:brightness-110 active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
             >
-              <Upload className="w-6 h-6 text-gray-400 dark:text-gray-500" />
-              <p className="text-sm text-gray-600 dark:text-gray-400">Clique para selecionar arquivos</p>
-              <p className="text-xs text-gray-500 dark:text-gray-600">Suporta PDF, PNG, JPG, MP3, MP4</p>
-            </div>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              multiple
-              className="hidden"
-              accept=".pdf,image/*,audio/*,video/*"
-            />
-            
-            {/* File List */}
-            {files.length > 0 && (
-              <div className="mt-4 space-y-2">
-                {files.map((file, index) => (
-                  <div key={index} className="flex items-center justify-between bg-gray-50 dark:bg-[#141414] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2">
-                    <div className="flex items-center gap-2 overflow-hidden">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                      <span className="text-sm text-gray-700 dark:text-gray-300 truncate">{file.name}</span>
-                    </div>
-                    <button 
-                      onClick={() => removeFile(index)}
-                      className="text-gray-400 hover:text-red-500 dark:text-gray-500 dark:hover:text-red-400 p-1 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+              {isAnalyzing ? (
+                <>
+                  <Loader2 className="h-[18px] w-[18px] animate-spin" />
+                  Processando análise…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-[18px] w-[18px]" />
+                  Iniciar diagnóstico ideológico
+                </>
+              )}
+            </button>
+            <p className="mt-3 text-center text-[11px] text-zinc-400 dark:text-zinc-600">
+              Relatório gerado por IA · leitura crítica humana continua necessária
+            </p>
           </div>
+        </section>
 
-          {error && (
-            <div className="p-4 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl flex items-start gap-3 text-red-600 dark:text-red-400 text-sm">
-              <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-              <p>{error}</p>
-            </div>
-          )}
-
-          <button
-            onClick={handleAnalyze}
-            disabled={isAnalyzing || (!textInput && !urlInput && files.length === 0)}
-            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-200 dark:disabled:bg-[#1a1a1a] disabled:text-gray-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2 mt-auto"
-          >
-            {isAnalyzing ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Processando Análise...
-              </>
-            ) : (
-              'Iniciar Diagnóstico Ideológico'
-            )}
-          </button>
-        </div>
-
-        {/* Right Panel: Output */}
-        <div className="bg-gray-50 dark:bg-[#050505] p-6 lg:p-8 overflow-y-auto max-h-[calc(100vh-73px)] relative transition-colors duration-200">
-          {result ? (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="max-w-3xl mx-auto"
-            >
-              <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-200 dark:border-white/10">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Relatório de Análise</h2>
-                {isAnalyzing ? (
-                  <div className="px-3 py-1 bg-blue-100 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 text-xs font-mono rounded-full border border-blue-200 dark:border-blue-500/20 flex items-center gap-2">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    PROCESSANDO
-                  </div>
-                ) : (
-                  <div className="px-3 py-1 bg-emerald-100 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs font-mono rounded-full border border-emerald-200 dark:border-emerald-500/20">
-                    CONCLUÍDO
-                  </div>
+        <section className={cn(cardClass, 'lg:min-h-0 dark:bg-[#0a0b10]/70')}>
+          <div className="flex items-center justify-between gap-3 border-b border-zinc-200/70 px-5 py-3.5 sm:px-6 dark:border-white/5">
+            <h2 className="text-[13px] font-semibold uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">Relatório</h2>
+            <div className="flex items-center gap-2">
+              {result && !isAnalyzing && (
+                <button
+                  onClick={handleCopy}
+                  className="flex items-center gap-1.5 rounded-lg border border-zinc-200/80 bg-white px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:bg-white/10"
+                >
+                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copied ? 'Copiado' : 'Copiar'}
+                </button>
+              )}
+              <span
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider',
+                  isAnalyzing
+                    ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300'
+                    : result
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+                      : 'border-zinc-200 bg-zinc-100/70 text-zinc-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-500',
                 )}
-              </div>
-              <div className="markdown-body">
-                <Markdown>{result}</Markdown>
-              </div>
-            </motion.div>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto opacity-60 dark:opacity-40">
-              <Search className="w-16 h-16 text-gray-400 dark:text-gray-600 mb-6" />
-              <h3 className="text-xl font-medium text-gray-900 dark:text-white mb-2">Nenhuma análise ativa</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Preencha os dados no painel lateral e inicie o diagnóstico para visualizar o relatório estruturado aqui.
-              </p>
+              >
+                {isAnalyzing && <Loader2 className="h-3 w-3 animate-spin" />}
+                {isAnalyzing ? 'Processando' : result ? 'Concluído' : 'Aguardando'}
+              </span>
             </div>
-          )}
-        </div>
+          </div>
+
+          <div ref={resultScrollRef} className="flex-1 overflow-y-auto p-5 sm:p-6">
+            {result ? (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+                <div className="markdown-body">
+                  <Markdown>{result}</Markdown>
+                  {isAnalyzing && (
+                    <span className="ml-0.5 inline-block h-4 w-[3px] translate-y-[2px] animate-pulse rounded-full bg-indigo-400 align-middle" />
+                  )}
+                </div>
+              </motion.div>
+            ) : (
+              <div className="flex h-full min-h-[320px] flex-col items-center justify-center text-center">
+                <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-200/80 bg-white/80 shadow-sm dark:border-white/10 dark:bg-white/5">
+                  <Search className="h-6 w-6 text-indigo-500 dark:text-indigo-400" />
+                </div>
+                <h3 className="mb-1.5 text-[15px] font-semibold tracking-tight text-zinc-900 dark:text-white">Nenhuma análise ainda</h3>
+                <p className="max-w-sm text-[13px] leading-relaxed text-zinc-500 dark:text-zinc-500">
+                  O diagnóstico aparece aqui, em streaming, com espectro político, hipóteses de autoria, contexto histórico e antítese.
+                </p>
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+                  {[
+                    { icon: FileText, label: 'Texto' },
+                    { icon: LinkIcon, label: 'URL' },
+                    { icon: Upload, label: 'Arquivos' },
+                  ].map(({ icon: Icon, label }) => (
+                    <span
+                      key={label}
+                      className="flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/70 px-3 py-1.5 text-[11px] font-medium text-zinc-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400"
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      {label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
       </main>
     </div>
   );
