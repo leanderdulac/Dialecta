@@ -48,6 +48,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [uploadLabel, setUploadLabel] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('dialecta-theme') : null;
     if (saved === 'light') return false;
@@ -119,20 +120,6 @@ export default function App() {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result.split(',')[1]);
-        } else {
-          reject(new Error('Falha ao ler o arquivo.'));
-        }
-      };
-      reader.onerror = () => reject(new Error('Falha ao ler o arquivo.'));
-    });
-
   const handleAnalyze = async () => {
     if (!textInput && !urlInput && files.length === 0) {
       setError('Forneça um texto, URL ou arquivo para análise.');
@@ -142,6 +129,7 @@ export default function App() {
     setIsAnalyzing(true);
     setResult('');
     setError(null);
+    setUploadLabel(null);
     resultScrollRef.current?.scrollTo({ top: 0 });
 
     try {
@@ -155,22 +143,18 @@ export default function App() {
         }
       }
 
-      const fileData = await Promise.all(
-        files.map(async (file) => ({
-          mimeType: file.type,
-          data: await fileToBase64(file),
-        })),
-      );
-
       await analyzeContent(
-        { text: combinedText.trim() || undefined, files: fileData },
+        { text: combinedText.trim() || undefined, files },
         (chunk) => setResult((prev) => prev + chunk),
+        (done, total, fileName) =>
+          setUploadLabel(total === 0 || done >= total ? null : `Enviando ${done + 1}/${total} · ${fileName}`),
       );
     } catch (err: any) {
       console.error('Erro na análise:', err);
       setError(err.message || 'Ocorreu um erro durante a análise.');
     } finally {
       setIsAnalyzing(false);
+      setUploadLabel(null);
     }
   };
 
@@ -310,7 +294,7 @@ export default function App() {
                     {isDragging ? 'Solte para anexar' : 'Arraste arquivos ou clique aqui'}
                   </p>
                   <p className="text-[11px] text-zinc-500 dark:text-zinc-600">
-                    PDF, imagem, áudio ou vídeo · até {MAX_FILES} arquivos de {formatBytes(MAX_FILE_BYTES)}
+                    PDF, imagem, áudio ou vídeo · até {MAX_FILES} arquivos, {formatBytes(MAX_FILE_BYTES)} cada
                   </p>
                 </div>
                 <input
@@ -368,7 +352,7 @@ export default function App() {
               {isAnalyzing ? (
                 <>
                   <Loader2 className="h-[18px] w-[18px] animate-spin" />
-                  Processando análise…
+                  {uploadLabel ?? 'Processando análise…'}
                 </>
               ) : (
                 <>
@@ -407,7 +391,7 @@ export default function App() {
                 )}
               >
                 {isAnalyzing && <Loader2 className="h-3 w-3 animate-spin" />}
-                {isAnalyzing ? 'Processando' : result ? 'Concluído' : 'Aguardando'}
+                {isAnalyzing ? (uploadLabel ? 'Enviando' : 'Processando') : result ? 'Concluído' : 'Aguardando'}
               </span>
             </div>
           </div>

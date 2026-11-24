@@ -3,6 +3,9 @@
   "functions": {
     "api/analyze.ts": {
       "maxDuration": 60
+    },
+    "api/upload.ts": {
+      "maxDuration": 60
     }
   }
 }

@@ -19,7 +19,7 @@ cp .env.example .env   # preencha GEMINI_API_KEY
 npm run dev
 ```
 
-Acesse `http://localhost:3000`. Em desenvolvimento o próprio Vite serve `/api/analyze`.
+Acesse `http://localhost:3000`. Em desenvolvimento o próprio Vite serve `/api/analyze` e `/api/upload`.
 
 ## Publicar na Vercel
 
@@ -29,4 +29,7 @@ Acesse `http://localhost:3000`. Em desenvolvimento o próprio Vite serve `/api/a
 
 ## Limites
 
-A Vercel aceita no máximo ~4,5 MB por requisição, e o base64 cresce ~33%. Por isso: até 3 arquivos, 2 MB cada, 2,5 MB no total, e textos até 100 mil caracteres. Para mídia maior, recorte o trecho ou envie o texto da transcrição.
+A Vercel corta o corpo de cada requisição em ~4,5 MB. Para não perder qualidade nem esbarrar nesse teto, cada arquivo sobe em uma requisição própria (`/api/upload`) que o repassa à Files API do Gemini; `/api/analyze` recebe apenas texto e as referências dos arquivos já enviados.
+
+Por isso os limites são: até 10 arquivos, 4 MB cada (sem teto de soma), e textos até 300 mil caracteres. A análise de mídia grande consome mais tempo, e cada função tem 60 segundos de execução.
+

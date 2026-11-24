@@ -11,15 +11,23 @@ export const ALLOWED_MIME_TYPES = [
   'video/quicktime',
 ];
 
-// Mantido em sincronia com os limites de server/analyze.ts: a Vercel recusa
-// requisições acima de ~4,5 MB, por isso o aviso acontece antes do envio.
-export const MAX_FILES = 3;
-export const MAX_FILE_BYTES = 2 * 1024 * 1024;
-export const MAX_TEXT_CHARS = 100_000;
+// Mantido em sincronia com api/upload.ts e api/analyze.ts. Cada arquivo sobe em
+// uma requisição própria para a Files API do Gemini, então o teto de ~4,5 MB da
+// Vercel vale por arquivo, não pelo conjunto.
+export const MAX_FILES = 10;
+export const MAX_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_TEXT_CHARS = 300_000;
+
+export interface StoredFile {
+  uri: string;
+  mimeType: string;
+  name: string;
+  sizeBytes: number;
+}
 
 export interface AnalysisInput {
   text?: string;
-  files?: { mimeType: string; data: string }[];
+  files?: File[];
 }
 
 function validateLocally(input: AnalysisInput): void {
@@ -36,18 +44,61 @@ function validateLocally(input: AnalysisInput): void {
   }
 
   for (const file of files) {
-    if (!ALLOWED_MIME_TYPES.includes(file.mimeType)) {
-      throw new Error(`Tipo de arquivo não suportado: ${file.mimeType}`);
+    if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+      throw new Error(`Tipo de arquivo não suportado: ${file.type || file.name}`);
     }
-    const bytes = Math.floor((file.data.length * 3) / 4);
-    if (bytes > MAX_FILE_BYTES) {
+    if (file.size > MAX_FILE_BYTES) {
       throw new Error(`O arquivo excede ${MAX_FILE_BYTES / (1024 * 1024)} MB. Reduza o arquivo ou envie um trecho.`);
     }
   }
 }
 
-export async function analyzeContent(input: AnalysisInput, onChunk: (text: string) => void): Promise<void> {
+async function readErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data = await response.json();
+    if (data?.error) return String(data.error);
+  } catch {
+    // resposta sem JSON: mantém a mensagem genérica
+  }
+  return fallback;
+}
+
+export async function uploadFile(file: File): Promise<StoredFile> {
+  const response = await fetch('/api/upload', {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type,
+      'X-File-Name': encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response, `Falha ao enviar "${file.name}" (HTTP ${response.status}).`));
+  }
+
+  const stored = (await response.json()) as StoredFile;
+  if (!stored?.uri) {
+    throw new Error(`O envio de "${file.name}" não devolveu uma referência válida.`);
+  }
+  return stored;
+}
+
+export async function analyzeContent(
+  input: AnalysisInput,
+  onChunk: (text: string) => void,
+  onUploadProgress?: (done: number, total: number, fileName: string) => void,
+): Promise<void> {
   validateLocally(input);
+
+  const files = input.files ?? [];
+  const stored: StoredFile[] = [];
+
+  for (let index = 0; index < files.length; index += 1) {
+    onUploadProgress?.(index, files.length, files[index].name);
+    stored.push(await uploadFile(files[index]));
+  }
+  onUploadProgress?.(files.length, files.length, '');
 
   const response = await fetch('/api/analyze', {
     method: 'POST',
@@ -55,18 +106,14 @@ export async function analyzeContent(input: AnalysisInput, onChunk: (text: strin
       'Content-Type': 'application/json',
       Accept: 'application/x-ndjson',
     },
-    body: JSON.stringify({ text: input.text, files: input.files ?? [] }),
+    body: JSON.stringify({
+      text: input.text,
+      files: stored.map(({ uri, mimeType, name }) => ({ uri, mimeType, name })),
+    }),
   });
 
   if (!response.ok) {
-    let message = `Falha na análise (HTTP ${response.status}).`;
-    try {
-      const data = await response.json();
-      if (data?.error) message = data.error;
-    } catch {
-      // resposta sem JSON: mantém a mensagem genérica
-    }
-    throw new Error(message);
+    throw new Error(await readErrorMessage(response, `Falha na análise (HTTP ${response.status}).`));
   }
 
   if (!response.body) {

@@ -83,29 +83,28 @@ export const ALLOWED_MIME_TYPES = [
   "video/quicktime",
 ] as const;
 
-// A Vercel limita o corpo da requisição a ~4,5 MB, e o base64 infla o arquivo
-// em ~33%. Os limites abaixo mantêm a requisição inteira dentro desse teto.
+// Os arquivos não passam mais por aqui: cada um sobe em requisição própria para
+// /api/upload e vira uma referência da Files API do Gemini. Por isso o corpo
+// desta requisição só carrega texto, e o limite pode ser bem maior.
 export const LIMITS = {
-  maxTextChars: 100_000,
-  maxFiles: 3,
-  maxFileBytes: 2 * 1024 * 1024,
-  maxTotalBytes: 2.5 * 1024 * 1024,
+  maxTextChars: 300_000,
+  maxFiles: 10,
 };
+
+export interface AnalyzedFile {
+  mimeType: string;
+  uri: string;
+  name?: string;
+}
 
 export interface AnalysisInput {
   text?: string;
-  files?: { mimeType: string; data: string }[];
+  files?: AnalyzedFile[];
 }
 
 export class InputError extends Error {}
 
-const BASE64_PATTERN = /^[A-Za-z0-9+/=\s]+$/;
-
-function estimateBase64Bytes(data: string): number {
-  const clean = data.replace(/\s/g, "");
-  const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
-  return Math.floor((clean.length * 3) / 4) - padding;
-}
+const ALLOWED_FILE_URI_PREFIX = "https://generativelanguage.googleapis.com/";
 
 export function validateInput(raw: unknown): AnalysisInput {
   if (!raw || typeof raw !== "object") {
@@ -126,39 +125,29 @@ export function validateInput(raw: unknown): AnalysisInput {
     throw new InputError("Envie no máximo " + LIMITS.maxFiles + " arquivos por análise.");
   }
 
-  let totalBytes = 0;
   const files = filesRaw.map((entry) => {
     if (!entry || typeof entry !== "object") {
       throw new InputError("Arquivo inválido.");
     }
-    const { mimeType, data } = entry as Record<string, unknown>;
+    const { mimeType, uri, name } = entry as Record<string, unknown>;
 
     if (typeof mimeType !== "string" || !(ALLOWED_MIME_TYPES as readonly string[]).includes(mimeType)) {
       throw new InputError("Tipo de arquivo não suportado: " + String(mimeType));
     }
-    if (typeof data !== "string" || data.length === 0 || !BASE64_PATTERN.test(data)) {
-      throw new InputError("Conteúdo do arquivo inválido.");
+    if (typeof uri !== "string" || !uri.startsWith(ALLOWED_FILE_URI_PREFIX)) {
+      throw new InputError("Referência de arquivo inválida. Envie o arquivo novamente.");
     }
 
-    const bytes = estimateBase64Bytes(data);
-    if (bytes > LIMITS.maxFileBytes) {
-      throw new InputError(
-        "Arquivo excede " + Math.round(LIMITS.maxFileBytes / (1024 * 1024)) + " MB. Reduza o arquivo ou envie um trecho.",
-      );
-    }
-
-    totalBytes += bytes;
-    if (totalBytes > LIMITS.maxTotalBytes) {
-      throw new InputError(
-        "O total de arquivos excede " + (LIMITS.maxTotalBytes / (1024 * 1024)).toFixed(1) + " MB por análise.",
-      );
-    }
-
-    return { mimeType, data: data.replace(/\s/g, "") };
+    return {
+      mimeType,
+      uri,
+      name: typeof name === "string" && name.startsWith("files/") ? name : undefined,
+    };
   });
 
   return { text: text || undefined, files };
 }
+
 
 let client: GoogleGenAI | null = null;
 
@@ -180,7 +169,7 @@ export async function streamAnalysis(input: AnalysisInput, onChunk: (text: strin
     parts.push({ text: input.text });
   }
   for (const file of input.files ?? []) {
-    parts.push({ inlineData: { mimeType: file.mimeType, data: file.data } });
+    parts.push({ fileData: { mimeType: file.mimeType, fileUri: file.uri } });
   }
 
   const responseStream = await getClient().models.generateContentStream({
@@ -196,6 +185,18 @@ export async function streamAnalysis(input: AnalysisInput, onChunk: (text: strin
   for await (const chunk of responseStream) {
     if (chunk.text) {
       onChunk(chunk.text);
+    }
+  }
+}
+
+export async function releaseFiles(input: AnalysisInput): Promise<void> {
+  const ai = getClient();
+  for (const file of input.files ?? []) {
+    if (!file.name) continue;
+    try {
+      await ai.files.delete({ name: file.name });
+    } catch {
+      // Sem isso o arquivo apenas expira sozinho na Files API.
     }
   }
 }
@@ -327,5 +328,6 @@ export default async function handler(req: RequestLike, res: ResponseLike) {
     if (!res.writableEnded) {
       res.end();
     }
+    await releaseFiles(input);
   }
 }

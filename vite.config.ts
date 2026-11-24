@@ -3,7 +3,20 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import 'dotenv/config';
-import { streamAnalysis, validateInput, toPublicError, isConfigured, MISSING_KEY_MESSAGE } from './api/analyze';
+import {
+  streamAnalysis,
+  validateInput,
+  toPublicError,
+  isConfigured,
+  releaseFiles,
+  MISSING_KEY_MESSAGE,
+} from './api/analyze';
+import {
+  storeFile,
+  readRawBytes,
+  toPublicError as toUploadError,
+  MISSING_KEY_MESSAGE as UPLOAD_MISSING_KEY_MESSAGE,
+} from './api/upload';
 
 function readJsonBody(req: any): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -90,6 +103,47 @@ function analysisApi(): Plugin {
           if (!res.writableEnded) {
             res.end();
           }
+          await releaseFiles(input);
+        }
+      });
+
+      server.middlewares.use('/api/upload', async (req: any, res: any) => {
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.setHeader('Allow', 'POST');
+          res.end(JSON.stringify({ error: 'Método não permitido.' }));
+          return;
+        }
+
+        if (!isConfigured()) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: UPLOAD_MISSING_KEY_MESSAGE }));
+          return;
+        }
+
+        const header = (name: string) => String(req.headers[name] ?? '').split(';')[0].trim().toLowerCase();
+        const rawName = String(req.headers['x-file-name'] ?? '');
+        let bytes: Uint8Array;
+        try {
+          bytes = await readRawBytes(req);
+        } catch {
+          res.statusCode = 413;
+          res.end(JSON.stringify({ error: 'Arquivo grande demais para envio.' }));
+          return;
+        }
+
+        try {
+          const stored = await storeFile(bytes, header('content-type'), decodeURIComponent(rawName) || undefined);
+          res.statusCode = 200;
+          res.end(JSON.stringify(stored));
+        } catch (error) {
+          console.error('[api/upload]', error);
+          const { status, message } = toUploadError(error);
+          res.statusCode = status;
+          res.end(JSON.stringify({ error: message }));
         }
       });
     },
